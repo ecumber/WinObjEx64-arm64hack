@@ -5,9 +5,9 @@
 *
 *  TITLE:       NTOS.H
 *
-*  VERSION:     1.194
+*  VERSION:     1.195
 *
-*  DATE:        14 May 2022
+*  DATE:        24 May 2022
 *
 *  Common header file for the ntos API functions and definitions.
 *

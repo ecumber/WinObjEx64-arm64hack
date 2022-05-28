@@ -4,9 +4,9 @@
 *
 *  TITLE:       EXTRASCALLBACKS.C
 *
-*  VERSION:     1.93
+*  VERSION:     1.94
 *
-*  DATE:        13 May 2022
+*  DATE:        28 May 2022
 *
 * THIS CODE AND INFORMATION IS PROVIDED "AS IS" WITHOUT WARRANTY OF
 * ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED
@@ -141,6 +141,7 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpCiCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpExHostCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpExpCallbackListCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpPoCoalescingCallbacks);
+OBEX_DISPLAYCALLBACK_ROUTINE(DumpPspPicoProviderRoutines);
 
 OBEX_FINDCALLBACK_ROUTINE(FindPspCreateProcessNotifyRoutine);
 OBEX_FINDCALLBACK_ROUTINE(FindPspCreateThreadNotifyRoutine);
@@ -161,6 +162,7 @@ OBEX_FINDCALLBACK_ROUTINE(FindCiCallbacks);
 OBEX_FINDCALLBACK_ROUTINE(FindExHostCallbacks);
 OBEX_FINDCALLBACK_ROUTINE(FindExpCallbackListHead);
 OBEX_FINDCALLBACK_ROUTINE(FindPoCoalescingCallbacks);
+OBEX_FINDCALLBACK_ROUTINE(FindPspPicoProviderRoutines);
 
 OBEX_CALLBACK_DISPATCH_ENTRY g_CallbacksDispatchTable[] = {
     {
@@ -276,6 +278,11 @@ OBEX_CALLBACK_DISPATCH_ENTRY g_CallbacksDispatchTable[] = {
         0, L"PowerCoalescing",
         QueryCallbackGeneric, DumpPoCoalescingCallbacks, FindPoCoalescingCallbacks,
         &g_SystemCallbacks.PoCoalescingCallbacks
+    },
+    {
+        0, L"PicoProviderRoutines",
+        QueryCallbackGeneric, DumpPspPicoProviderRoutines, FindPspPicoProviderRoutines,
+        &g_SystemCallbacks.PspPicoProviderRoutines
     }
 };
 
@@ -2687,6 +2694,79 @@ OBEX_FINDCALLBACK_ROUTINE(FindPoCoalescingCallbacks)
 }
 
 /*
+* FindPspPicoProviderRoutines
+*
+* Purpose:
+*
+* Returns the address of PspPicoProviderRoutines array of callbacks registered with:
+*
+*   PsRegisterPicoProvider
+*
+*/
+OBEX_FINDCALLBACK_ROUTINE(FindPspPicoProviderRoutines)
+{
+    ULONG Index;
+    LONG Rel;
+    PBYTE ptrCode;
+    hde64s hs;
+    ULONG_PTR kvarAddress = 0;
+
+    UNREFERENCED_PARAMETER(QueryFlags);
+
+    //
+    // Not available prior Windows 10.
+    //
+    if (g_NtBuildNumber < NT_WIN10_THRESHOLD1)
+        return 0;
+
+    if (kdIsSymAvailable((PSYMCONTEXT)g_kdctx.NtOsSymContext)) {
+
+        kdGetAddressFromSymbol(&g_kdctx,
+            KVAR_PspPicoProviderRoutines,
+            &kvarAddress);
+
+    }
+
+    if (kvarAddress == 0) {
+
+        ptrCode = (PBYTE)GetProcAddress((HMODULE)g_kdctx.NtOsImageMap,
+            "PsRegisterPicoProvider");
+
+        if (ptrCode == NULL)
+            return 0;
+
+        Index = 0;
+        Rel = 0;
+
+        do {
+
+            hde64_disasm(ptrCode + Index, &hs);
+            if (hs.flags & F_ERROR)
+                break;
+
+            if (hs.len == 7) { //check if movups
+
+                if ((ptrCode[Index] == 0x0F) &&
+                    (ptrCode[Index + 1] == 0x11) &&
+                    (ptrCode[Index + 2] == 0x05))
+                {
+                    Rel = *(PLONG)(ptrCode + Index + 3);
+                    break;
+                }
+            }
+
+            Index += hs.len;
+
+        } while (Index < 256);
+
+        kvarAddress = ComputeAddressInsideNtOs((ULONG_PTR)ptrCode, Index, hs.len, Rel);
+
+    }
+
+    return kvarAddress;
+}
+
+/*
 * AddRootEntryToList
 *
 * Purpose:
@@ -4458,6 +4538,100 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpPoCoalescingCallbacks)
         }
 
     }
+}
+
+LPWSTR PspPicoProviderNameFromIndex(
+    _In_ SIZE_T Index
+)
+{
+    LPWSTR LxpNames[] = {
+        L"PicoSystemCallDispatch", 
+        L"PicoThreadExit",
+        L"PicoProcessExit",
+        L"PicoDispatchException",
+        L"PicoProcessTerminate",
+        L"PicoWalkUserStack",
+        L"LxpProtectedRanges",
+        L"PicoGetAllocatedProcessImageName"
+    };
+
+    if (Index >= RTL_NUMBER_OF(LxpNames))
+        return T_Unknown;
+
+    return LxpNames[Index];
+}
+
+/*
+* DumpPspPicoProviderRoutines
+*
+* Purpose:
+*
+* Read PspPicoProviderRoutines data from kernel and send them to output window.
+*
+*/
+OBEX_DISPLAYCALLBACK_ROUTINE(DumpPspPicoProviderRoutines)
+{
+    SIZE_T i, c;
+
+    PULONG_PTR picoRoutines;
+    SIZE_T dataSize;
+
+    HTREEITEM RootItem;
+
+    //
+    // Add callback root entry to the treelist.
+    //
+    RootItem = AddRootEntryToList(TreeList, CallbackType);
+    if (RootItem == 0)
+        return;
+
+    //
+    // Not available.
+    //
+    if (g_NtBuildNumber < NT_WIN10_THRESHOLD1 ||
+        g_NtBuildNumber == NT_WIN10_THRESHOLD2)
+    {
+        return;
+    }
+
+    dataSize = 0;
+    if (kdReadSystemMemory(KernelVariableAddress,
+        &dataSize,
+        sizeof(dataSize)))
+    {
+        if (dataSize < 2 * sizeof(SIZE_T) ||
+            dataSize > PAGE_SIZE)
+        {
+            return;
+        }
+
+        dataSize -= sizeof(SIZE_T); //exclude size element
+
+        picoRoutines = (PULONG_PTR)supHeapAlloc(ALIGN_UP(dataSize, PULONG_PTR));
+        if (picoRoutines) {
+
+            if (kdReadSystemMemory(KernelVariableAddress + sizeof(SIZE_T),
+                picoRoutines,
+                (ULONG)dataSize))
+            {
+                c = dataSize / sizeof(ULONG_PTR);
+
+                for (i = 0; i < c; i++) {
+                    if (picoRoutines[i] > g_kdctx.SystemRangeStart) {
+                        AddEntryToList(TreeList,
+                            RootItem,
+                            (ULONG_PTR)picoRoutines[i],
+                            PspPicoProviderNameFromIndex(i),
+                            Modules);
+                    }
+                }
+            }
+
+            supHeapFree(picoRoutines);
+        }
+
+    }
+
 }
 
 /*
