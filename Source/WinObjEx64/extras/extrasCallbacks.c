@@ -142,6 +142,7 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpExHostCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpExpCallbackListCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpPoCoalescingCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpPspPicoProviderRoutines);
+OBEX_DISPLAYCALLBACK_ROUTINE(DumpKiNmiCallbackListHead);
 
 OBEX_FINDCALLBACK_ROUTINE(FindPspCreateProcessNotifyRoutine);
 OBEX_FINDCALLBACK_ROUTINE(FindPspCreateThreadNotifyRoutine);
@@ -163,6 +164,7 @@ OBEX_FINDCALLBACK_ROUTINE(FindExHostCallbacks);
 OBEX_FINDCALLBACK_ROUTINE(FindExpCallbackListHead);
 OBEX_FINDCALLBACK_ROUTINE(FindPoCoalescingCallbacks);
 OBEX_FINDCALLBACK_ROUTINE(FindPspPicoProviderRoutines);
+OBEX_FINDCALLBACK_ROUTINE(FindKiNmiCallbackListHead);
 
 OBEX_CALLBACK_DISPATCH_ENTRY g_CallbacksDispatchTable[] = {
     {
@@ -283,6 +285,11 @@ OBEX_CALLBACK_DISPATCH_ENTRY g_CallbacksDispatchTable[] = {
         0, L"PicoProviderRoutines",
         QueryCallbackGeneric, DumpPspPicoProviderRoutines, FindPspPicoProviderRoutines,
         &g_SystemCallbacks.PspPicoProviderRoutines
+    },
+    {
+        0, L"NmiCallbacks",
+        QueryCallbackGeneric, DumpKiNmiCallbackListHead, FindKiNmiCallbackListHead,
+        &g_SystemCallbacks.KiNmiCallbackListHead
     }
 };
 
@@ -2767,6 +2774,155 @@ OBEX_FINDCALLBACK_ROUTINE(FindPspPicoProviderRoutines)
 }
 
 /*
+* FindKiNmiCallbackListHead
+*
+* Purpose:
+*
+* Returns the address of KiNmiCallbackListHead for callbacks registered with:
+*
+*   KeRegisterNmiCallback
+*
+*/
+OBEX_FINDCALLBACK_ROUTINE(FindKiNmiCallbackListHead)
+{
+    ULONG Index, c;
+    LONG Rel;
+    PBYTE ptrCode;
+    hde64s hs;
+    ULONG_PTR kvarAddress = 0;
+
+    UNREFERENCED_PARAMETER(QueryFlags);
+
+    //
+    // Don't want to bother with support of such legacy code 
+    // as we need support for only LTSB/C legacy stuff.
+    //
+    if (g_NtBuildNumber < NT_WIN10_THRESHOLD1)
+        return 0;
+
+    if (kdIsSymAvailable((PSYMCONTEXT)g_kdctx.NtOsSymContext)) {
+
+        kdGetAddressFromSymbol(&g_kdctx,
+            KVAR_KiNmiCallbackListHead,
+            &kvarAddress);
+
+    }
+
+    if (kvarAddress == 0) {
+
+        ptrCode = (PBYTE)GetProcAddress((HMODULE)g_kdctx.NtOsImageMap,
+            "KeDeregisterNmiCallback");
+
+        if (ptrCode == NULL)
+            return 0;
+
+        Index = 0;
+        Rel = 0;
+
+        if (g_NtBuildNumber < NT_WIN10_REDSTONE3) {
+
+            c = 0;
+
+            do {
+
+                hde64_disasm(&ptrCode[Index], &hs);
+                if (hs.flags & F_ERROR)
+                    break;
+
+                if (hs.len == 7) {
+
+                    if (ptrCode[Index] == 0x48 &&
+                        ptrCode[Index + 1] == 0x8D &&
+                        ptrCode[Index + 2] == 0x0D)
+                    {
+                        c += 1;
+                    }
+                }
+
+                if (c > 2) {
+                    Rel = *(PLONG)(ptrCode + Index + 3);
+                    break;
+                }
+
+                Index += hs.len;
+
+            } while (Index < 256);
+
+
+        }
+        else {
+
+            do {
+
+                hde64_disasm(ptrCode + Index, &hs);
+                if (hs.flags & F_ERROR)
+                    break;
+
+                if (hs.len == 5) {
+
+                    //
+                    // Find KiDeregisterNmiSxCallback.
+                    //
+                    if (ptrCode[Index] == 0xE8) {
+                        Rel = *(PLONG)(ptrCode + Index + 1);
+                        break;
+                    }
+                }
+
+                Index += hs.len;
+
+            } while (Index < 64);
+
+            if (Rel != 0) {
+
+                ptrCode = ptrCode + Index + hs.len + Rel;
+                Index = 0;
+                Rel = 0;
+                c = 0;
+
+                //
+                // Scan KiDeregisterNmiSxCallback.
+                //
+                do {
+
+                    hde64_disasm(&ptrCode[Index], &hs);
+                    if (hs.flags & F_ERROR)
+                        break;
+
+                    if (hs.len == 7) {
+
+                        if (ptrCode[Index] == 0x48 &&
+                            ptrCode[Index + 1] == 0x8D &&
+                            ptrCode[Index + 2] == 0x0D)
+                        {
+                            c += 1;
+                        }
+                    }
+
+                    //
+                    // Second lea is ours.
+                    //
+                    if (c > 1) {
+                        Rel = *(PLONG)(ptrCode + Index + 3);
+                        break;
+                    }
+
+                    Index += hs.len;
+
+                } while (Index < 128);
+
+            }
+
+        }
+
+        kvarAddress = ComputeAddressInsideNtOs((ULONG_PTR)ptrCode, Index, hs.len, Rel);
+
+    }
+
+    return kvarAddress;
+}
+
+/*
 * AddRootEntryToList
 *
 * Purpose:
@@ -4629,6 +4785,66 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpPspPicoProviderRoutines)
 
             supHeapFree(picoRoutines);
         }
+
+    }
+
+}
+
+/*
+* DumpKiNmiCallbackListHead
+*
+* Purpose:
+*
+* Read NMI callback list from kernel and send them to output window.
+*
+*/
+OBEX_DISPLAYCALLBACK_ROUTINE(DumpKiNmiCallbackListHead)
+{
+    ULONG_PTR Next;
+    KNMI_HANDLER_CALLBACK NmiEntry;
+    HTREEITEM RootItem;
+
+    //
+    // Add callback root entry to the treelist.
+    //
+    RootItem = AddRootEntryToList(TreeList, CallbackType);
+    if (RootItem == 0)
+        return;
+
+    //
+    // Read head.
+    //
+    RtlSecureZeroMemory(&NmiEntry, sizeof(NmiEntry));
+
+    if (!kdReadSystemMemory(KernelVariableAddress,
+        (PVOID)&NmiEntry,
+        sizeof(NmiEntry)))
+    {
+        return;
+    }
+
+    //
+    // Walk each entry in single linked list.
+    //
+    Next = (ULONG_PTR)NmiEntry.Next;
+    while (Next) {
+
+        RtlSecureZeroMemory(&NmiEntry, sizeof(NmiEntry));
+
+        if (!kdReadSystemMemory(Next,
+            (PVOID)&NmiEntry,
+            sizeof(NmiEntry)))
+        {
+            break;
+        }
+
+        AddEntryToList(TreeList,
+            RootItem,
+            (ULONG_PTR)NmiEntry.Callback,
+            NULL,
+            Modules);
+
+        Next = (ULONG_PTR)NmiEntry.Next;
 
     }
 

@@ -302,6 +302,7 @@ typedef struct _NOTIFICATION_CALLBACKS {
     ULONG_PTR ExpCallbackListHead;
     ULONG_PTR PoCoalescingCallbacks;
     ULONG_PTR PspPicoProviderRoutines;
+    ULONG_PTR KiNmiCallbackListHead;
 } NOTIFICATION_CALLBACKS, *PNOTIFICATION_CALLBACKS;
 
 //
