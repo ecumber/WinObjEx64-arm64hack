@@ -104,6 +104,7 @@ typedef PVOID PHEAD;
 typedef PVOID PEJOB;
 typedef struct _IO_TIMER* PIO_TIMER;
 typedef LARGE_INTEGER PHYSICAL_ADDRESS;
+typedef struct _EJOB* PESILO;
 
 #ifndef _WIN32_WINNT_WIN10
 #define _WIN32_WINNT_WIN10 0x0A00
@@ -5208,6 +5209,34 @@ typedef struct _KNMI_HANDLER_CALLBACK {
     PVOID Context;
     PVOID Handle;
 } KNMI_HANDLER_CALLBACK, * PKNMI_HANDLER_CALLBACK;
+
+typedef
+NTSTATUS
+(NTAPI* SILO_MONITOR_CREATE_CALLBACK)(
+    _In_ PESILO Silo
+    );
+
+typedef
+VOID
+(NTAPI* SILO_MONITOR_TERMINATE_CALLBACK)(
+    _In_ PESILO Silo
+    );
+
+#define SILO_MONITOR_REGISTRATION_VERSION (1)
+
+typedef struct _SERVER_SILO_MONITOR {
+    LIST_ENTRY ListEntry;
+    UCHAR Version;
+    BOOLEAN MonitorHost;
+    BOOLEAN MonitorExistingSilos;
+    UCHAR Reserved[5];
+    SILO_MONITOR_CREATE_CALLBACK CreateCallback;
+    SILO_MONITOR_TERMINATE_CALLBACK TerminateCallback;
+    union {
+        PUNICODE_STRING DriverObjectName;
+        PUNICODE_STRING ComponentName;
+    };
+} SERVER_SILO_MONITOR, * PSERVER_SILO_MONITOR;
 
 /*
 ** Callbacks END

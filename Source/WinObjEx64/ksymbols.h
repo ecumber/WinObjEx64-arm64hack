@@ -65,6 +65,8 @@
 
 #define KVAR_KiNmiCallbackListHead                  L"KiNmiCallbackListHead"
 
+#define KVAR_PspSiloMonitorList                     L"PspSiloMonitorList"
+
 #define KVAR_Win32kApiSetTable                      L"Win32kApiSetTable"
 
 #define KFLD_UniqueProcessId                        L"UniqueProcessId"

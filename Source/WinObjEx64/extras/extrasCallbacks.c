@@ -143,6 +143,7 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpExpCallbackListCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpPoCoalescingCallbacks);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpPspPicoProviderRoutines);
 OBEX_DISPLAYCALLBACK_ROUTINE(DumpKiNmiCallbackListHead);
+OBEX_DISPLAYCALLBACK_ROUTINE(DumpPspSiloMonitorList);
 
 OBEX_FINDCALLBACK_ROUTINE(FindPspCreateProcessNotifyRoutine);
 OBEX_FINDCALLBACK_ROUTINE(FindPspCreateThreadNotifyRoutine);
@@ -165,6 +166,7 @@ OBEX_FINDCALLBACK_ROUTINE(FindExpCallbackListHead);
 OBEX_FINDCALLBACK_ROUTINE(FindPoCoalescingCallbacks);
 OBEX_FINDCALLBACK_ROUTINE(FindPspPicoProviderRoutines);
 OBEX_FINDCALLBACK_ROUTINE(FindKiNmiCallbackListHead);
+OBEX_FINDCALLBACK_ROUTINE(FindPspSiloMonitorList);
 
 OBEX_CALLBACK_DISPATCH_ENTRY g_CallbacksDispatchTable[] = {
     {
@@ -290,6 +292,11 @@ OBEX_CALLBACK_DISPATCH_ENTRY g_CallbacksDispatchTable[] = {
         0, L"NmiCallbacks",
         QueryCallbackGeneric, DumpKiNmiCallbackListHead, FindKiNmiCallbackListHead,
         &g_SystemCallbacks.KiNmiCallbackListHead
+    },
+    {
+        0, L"SiloMonitor",
+        QueryCallbackGeneric, DumpPspSiloMonitorList, FindPspSiloMonitorList,
+        &g_SystemCallbacks.PspSiloMonitorList
     }
 };
 
@@ -2923,6 +2930,80 @@ OBEX_FINDCALLBACK_ROUTINE(FindKiNmiCallbackListHead)
 }
 
 /*
+* FindPspSiloMonitorList
+*
+* Purpose:
+*
+* Returns the address of PspSiloMonitorList for callbacks registered with:
+*
+*   PsRegisterSiloMonitor
+*
+*/
+OBEX_FINDCALLBACK_ROUTINE(FindPspSiloMonitorList)
+{
+    ULONG Index;
+    LONG Rel;
+    PBYTE ptrCode;
+    hde64s hs;
+    ULONG_PTR kvarAddress = 0;
+
+    UNREFERENCED_PARAMETER(QueryFlags);
+
+    //
+    // Not available prior Windows 10 RS3.
+    //
+    if (g_NtBuildNumber < NT_WIN10_REDSTONE3)
+        return 0;
+
+    if (kdIsSymAvailable((PSYMCONTEXT)g_kdctx.NtOsSymContext)) {
+
+        kdGetAddressFromSymbol(&g_kdctx,
+            KVAR_PspSiloMonitorList,
+            &kvarAddress);
+
+    }
+
+    if (kvarAddress == 0) {
+
+        ptrCode = (PBYTE)GetProcAddress((HMODULE)g_kdctx.NtOsImageMap,
+            "PsStartSiloMonitor");
+
+        if (ptrCode == NULL)
+            return 0;
+
+        Index = 0;
+        Rel = 0;
+
+        do {
+
+            hde64_disasm(ptrCode + Index, &hs);
+            if (hs.flags & F_ERROR)
+                break;
+
+            if (hs.len == 7) {
+
+                if (ptrCode[Index] == 0x48 &&
+                    ptrCode[Index + 1] == 0x8D &&
+                    ptrCode[Index + 2] == 0x0D &&
+                    ptrCode[Index + hs.len] == 0x48)
+                {
+                    Rel = *(PLONG)(ptrCode + Index + 3);
+                    break;
+                }
+            }
+
+            Index += hs.len;
+
+        } while (Index < 512);
+
+        kvarAddress = ComputeAddressInsideNtOs((ULONG_PTR)ptrCode, Index, hs.len, Rel);
+
+    }
+
+    return kvarAddress;
+}
+
+/*
 * AddRootEntryToList
 *
 * Purpose:
@@ -3231,16 +3312,14 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpPsAltSystemCallHandlers)
 
         for (i = 0; i < MAX_ALT_SYSTEM_CALL_HANDLERS; i++) {
 
-            if (AltSystemCallHandlers[i]) {
-
-                if (AltSystemCallHandlers[i] < g_kdctx.SystemRangeStart)
-                    continue;
+            if (AltSystemCallHandlers[i] > g_kdctx.SystemRangeStart) {
 
                 AddEntryToList(TreeList,
                     RootItem,
                     AltSystemCallHandlers[i],
                     NULL,
                     Modules);
+
             }
         }
     }
@@ -4264,14 +4343,14 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpCiCallbacks)
                             Modules);
 
                     }
-                    else {
+                   /* else {
 
                         AddZeroEntryToList(TreeList,
                             RootItem,
                             CallbacksData[i],
                             CallbackName);
 
-                    }
+                    }*/
                 }
             }
             supVirtualFree(CallbacksData);
@@ -4339,14 +4418,14 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpCiCallbacks)
                             Modules);
 
                     }
-                    else {
+                    /*else {
 
                         AddZeroEntryToList(TreeList,
                             RootItem,
                             0,
                             CallbackName);
 
-                    }
+                    }*/
 
                     DataPtr++;
 
@@ -4846,6 +4925,81 @@ OBEX_DISPLAYCALLBACK_ROUTINE(DumpKiNmiCallbackListHead)
 
         Next = (ULONG_PTR)NmiEntry.Next;
 
+    }
+
+}
+
+/*
+* DumpPspSiloMonitorList
+*
+* Purpose:
+*
+* Read Silo monitor callback list from kernel and send them to output window.
+*
+*/
+OBEX_DISPLAYCALLBACK_ROUTINE(DumpPspSiloMonitorList)
+{
+    LIST_ENTRY ListEntry;
+    ULONG_PTR ListHead = KernelVariableAddress;
+    HTREEITEM RootItem;
+
+    SERVER_SILO_MONITOR SiloMonitor;
+
+    //
+    // Add callback root entry to the treelist.
+    //
+    RootItem = AddRootEntryToList(TreeList, CallbackType);
+    if (RootItem == 0)
+        return;
+
+    ListEntry.Flink = ListEntry.Blink = NULL;
+
+    //
+    // Read head.
+    //
+    if (!kdReadSystemMemory(
+        ListHead,
+        &ListEntry,
+        sizeof(LIST_ENTRY)))
+    {
+        return;
+    }
+
+    //
+    // Walk list entries.
+    //
+    while ((ULONG_PTR)ListEntry.Flink != ListHead) {
+
+        RtlSecureZeroMemory(&SiloMonitor, sizeof(SiloMonitor));
+
+        if (!kdReadSystemMemory(
+            (ULONG_PTR)ListEntry.Flink,
+            &SiloMonitor,
+            sizeof(SiloMonitor)))
+        {
+            break;
+        }
+
+        if (SiloMonitor.CreateCallback != NULL) {
+            AddEntryToList(TreeList,
+                RootItem,
+                (ULONG_PTR)SiloMonitor.CreateCallback,
+                L"CreateCallback",
+                Modules);
+        }
+
+        if (SiloMonitor.TerminateCallback != NULL) {
+            AddEntryToList(TreeList,
+                RootItem,
+                (ULONG_PTR)SiloMonitor.TerminateCallback,
+                L"TerminateCallback",
+                Modules);
+        }
+
+        if (SiloMonitor.ListEntry.Flink == NULL)
+            break;
+
+        ListEntry.Flink = SiloMonitor.ListEntry.Flink;
     }
 
 }
