@@ -1991,8 +1991,9 @@ PROP_OBJECT_DUMP_ROUTINE(propObDumpDeviceObject)
     propObDumpByte(hwndTreeList, h_tviSubItem, L"Busy", NULL, devObject.DeviceQueue.Busy, 0, 0, TRUE);
 
     //DeviceQueue->Hint
+    #ifndef _M_ARM64
     propObDumpAddress(hwndTreeList, h_tviSubItem, L"Hint", NULL, (PVOID)devObject.DeviceQueue.Hint, 0, 0);
-
+    #endif
     //
     //DEVICE_OBJECT->Dpc
     //

@@ -20,7 +20,7 @@ unsigned int hde64_disasm(const void *code, hde64s *hs)
     uint8_t op64 = 0;
 
     // Avoid using memset to reduce the footprint.
-#ifndef _MSC_VER
+#if !defined _MSC_VER || defined _M_ARM64
     memset((LPBYTE)hs, 0, sizeof(hde64s));
 #else
     __stosb((LPBYTE)hs, 0, sizeof(hde64s));
